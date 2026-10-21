@@ -167,6 +167,15 @@ test('the units do not block executable memory, which V8 needs', () => {
   assert.match(read('deploy/README.md'), /5\/TRAP/, 'the failure mode must be documented');
 });
 
+test('the deployment docs record what was actually executed on the VM', () => {
+  const deploy = read('deploy/README.md');
+
+  assert.match(deploy, /Verification record \(executed, not planned\)/);
+  assert.match(deploy, /systemd 259/);
+  // The journal-vs-file distinction decides what an empty grep means.
+  assert.match(deploy, /StandardOutput=append:/);
+});
+
 test('the install steps create the state and log directories by hand', () => {
   const deploy = read('deploy/README.md');
 

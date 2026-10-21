@@ -85,31 +85,33 @@ a day early.
 
 ## Verification: what was actually run
 
-`npm run build` and `npm test` (176 tests, 0 failures); Module 1 and 2 HTTP surfaces,
+`npm run build` and `npm test` (179 tests, 0 failures); Module 1 and 2 HTTP surfaces,
 batching, retry, dead-letter and shutdown flush; GraphQL end to end on the in-memory
 gateway; the PS256 assertion against a local key pair; the BigQuery load-job request shape
 against an injected `fetch`.
 
-**Not executed, and not claimed:** any real BigQuery query or load, any real NetSuite call,
-Cloud Run deploy, IAM bindings, Secret Manager, Workload Identity Federation, and `systemd`
-boot/restart — there is no `gcloud`, project, ADC or `systemctl` here. Commands for each are
-in `deploy/`, labelled with their status. BigQuery verification is a dry run:
+**Also executed on a Multipass VM** (Ubuntu 26.04, aarch64, systemd 259, Node 24.22.0): both
+units as real services, `active (running)`, automatic start after `reboot` with queue and
+buffer intact, `SIGKILL` recovered by `Restart=always` (`NRestarts` 0→1) without losing an
+event, and the shutdown flush delivering 3 buffered rows on `SIGTERM`. See `deploy/README.md`.
 
-```bash
-bq query --use_legacy_sql=false --dry_run --project_id="$PROJECT" \
-  --dataset_id=finns_hospitality < database/queries/conversion_metrics.sql
-```
+**Not executed, and not claimed:** any real BigQuery query or load, any real NetSuite call,
+Cloud Run deploy, IAM bindings, Secret Manager, and Workload Identity Federation — there is
+no `gcloud`, project or ADC here. Commands are in `deploy/`, labelled with their status,
+including the BigQuery `--dry_run` that must be re-run once a project exists.
 
 ## Operating the edge services
 
-The unit installed by `deploy/README.md` is `edge-webhook.service` (file
-`deploy/edge-webhook.service`); confirm the name before searching, then:
+systemd records unit lifecycle in the journal, while the services themselves write JSON
+lines to `/var/log/<unit>/<unit>.log`. The unit installed by `deploy/README.md` is
+`edge-webhook.service` (file `deploy/edge-webhook.service`); confirm the name, then:
 
 ```bash
 sudo journalctl -u edge-webhook.service --since "24 hours ago" --no-pager | grep -iE 'timeout|timed out'
 ```
 
-Same pattern for `iot-buffer.service`; `--since` keeps the search bounded.
+Same for `iot-buffer.service`; `--since` keeps the search bounded, and application-level
+timeouts land in the file log rather than the journal.
 
 ## Documentation
 

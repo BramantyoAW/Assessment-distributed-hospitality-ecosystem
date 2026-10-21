@@ -254,20 +254,59 @@ The same pattern for the buffer, whose unit is `iot-buffer.service`:
 sudo journalctl -u iot-buffer.service --since "24 hours ago" --no-pager | grep -iE 'timeout|timed out'
 ```
 
-`journalctl` reads the journal, while both units also log to a file
-(`/var/log/edge-webhook/*.log`). If the journal is rotated away or the unit was
-started outside systemd during debugging, use the file instead:
+Be precise about what each source contains, because it decides what an empty result means:
+
+| Source | Contains |
+| --- | --- |
+| `journalctl -u <unit>` | systemd's own lifecycle records: started, stopped, failed, exit codes |
+| `/var/log/<unit>/<unit>.log` | the application's JSON lines, because `StandardOutput=append:` redirects them there |
+
+So a `timeout` **inside the application** (an HTTP call to NetSuite that gave up) appears in
+the file log, not in the journal; a unit that systemd had to stop because it hung appears in
+the journal. Search both, and read an empty result as "nothing matched", never as "the
+command does not work":
 
 ```bash
 sudo grep -aiE 'timeout|timed out' /var/log/edge-webhook/edge-webhook.log | tail -50
+sudo journalctl -u edge-webhook.service --no-pager | grep -iE 'failed|exited|signal'
 ```
 
-**Verification status: NOT EXECUTED.** There is no systemd on the development machine
-(`systemctl` and `journalctl` are absent), so neither the unit's start behaviour nor
-`Restart=always` has been observed here. The unit file exists and is reviewed; that is
-not the same as booted.
+**Verification status: EXECUTED** on a Multipass VM on 2026-10-21, systemd 259. The
+`journalctl` command above returns 0 matches on a healthy unit (expected — see the table),
+and the same search against the file log returns the application's retry records. The
+start/restart/boot behaviour is recorded in §10.
 
-## 10. When the unit will not start
+## 10. Verification record (executed, not planned)
+
+Run on a Multipass VM: Ubuntu 26.04, kernel `7.0.0-38-generic`, `aarch64`, systemd
+`259 (259.5-0ubuntu3.4)`, Node `v24.22.0`.
+
+| Check | Result |
+| --- | --- |
+| `systemctl enable --now edge-webhook.service iot-buffer.service` | `active (running)` for both |
+| `sudo reboot`, then without touching anything | `active` both, `up 0 minutes`, `NRestarts=0` |
+| Queue before/after reboot | `completed 4`, `failed 1` — identical, nothing lost |
+| Buffer before/after reboot | `sent 5`, sink `5` lines — identical |
+| `systemctl kill -s SIGKILL edge-webhook.service` | `NRestarts` 0→1, back to `active` in ~5 s, queue unchanged |
+| NetSuite unreachable, event queued | `pending` with `network: fetch failed`, retried 6× with backoff, then `completed` once the endpoint returned |
+| Duplicate `eventId` | `202` + `{"status":"duplicate"}`, one row, one delivery |
+| Shutdown flush (`systemctl stop iot-buffer.service`) | 3 buffered rows `pending` → `sent`, sink 2 → 5 lines, `shutdown_complete` on `SIGTERM` |
+| `journalctl -u edge-webhook.service --since "24 hours ago" ... \| grep -iE 'timeout\|timed out'` | runs, 0 matches |
+
+Two things this run taught, both now baked into the files above:
+
+- `StateDirectory=`/`LogsDirectory=` were **not** materialised on this systemd version, so
+  the install step creates the directories explicitly. Without it the unit dies with
+  `status=209/STDOUT`.
+- `MemoryDenyWriteExecute=true` killed node with `Check failed: 12 == errno` (V8 cannot
+  allocate executable memory). Isolated with `systemd-run --property=...`; the directive is
+  gone from both units.
+
+Still **not** verified, and never claimed: BigQuery (DDL, dry run, load job), a real
+NetSuite account, Cloud Run deploy, IAM bindings, Secret Manager, WIF. The VM run proves
+systemd behaviour only.
+
+## 11. When the unit will not start
 
 | `systemctl status` says | Cause | Fix |
 | --- | --- | --- |
@@ -286,7 +325,7 @@ systemctl status edge-webhook.service --no-pager -l
 sudo journalctl -u edge-webhook.service -n 40 --no-pager
 ```
 
-## 11. Uninstall
+## 12. Uninstall
 
 ```bash
 sudo systemctl disable --now edge-webhook.service iot-buffer.service
