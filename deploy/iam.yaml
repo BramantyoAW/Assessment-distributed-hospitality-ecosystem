@@ -1,0 +1,123 @@
+# Roles and bindings for the cloud tier
+
+This file is the reviewable source of truth for who may touch what. It is written
+as data so that `gcp-middleware/tests/deploy.test.ts` can assert the two rules that
+are easy to get wrong, and it is applied by hand (three `gcloud` commands listed at
+the bottom) rather than by a CI step, because the project is created once.
+
+Replace `PROJECT` with the real project id before applying.
+
+## Why per-table grants instead of a dataset-wide role
+
+`roles/bigquery.dataEditor` on the **dataset** lets the edge host read every table,
+including `fact_transactions` (revenue). The edge host only ever appends camera
+readings, so it gets `WRITE_APPEND` on exactly one table. Same logic in the other
+direction: the GraphQL service is read-only, so it gets `dataViewer` on the two
+**views** and the dimensions — never on the base fact tables, which would let a bug
+in one query bypass the dedupe guarantees.
+
+`roles/bigquery.jobUser` is project-scoped because a job is a project resource;
+BigQuery has no table-scoped job permission. That is a platform constraint, and it
+is recorded here so it is not mistaken for an oversight.
+
+```yaml
+serviceAccounts:
+  - name: edge-webhook
+    purpose: Module 1 + Module 2 on the property host; appends camera readings only
+  - name: gcp-graphql
+    purpose: Cloud Run Service; reads the dedupe views and the dimensions only
+  - name: gcp-ingest
+    purpose: Cloud Run Job; appends transactions and the ingest checkpoint
+
+bindings:
+  # --- Edge host: append camera events, nothing else -------------------------
+  - member: edge-webhook
+    role: roles/bigquery.dataEditor
+    resource: table:finns_hospitality.fact_camera_events
+    reason: WRITE_APPEND load jobs from the Module 2 batcher
+  - member: edge-webhook
+    role: roles/bigquery.jobUser
+    resource: project:PROJECT
+    reason: a load job is a project-scoped resource
+  - member: edge-webhook
+    role: roles/bigquery.dataViewer
+    resource: table:finns_hospitality.vw_fact_camera_events
+    reason: verify the batch landed, without seeing revenue
+
+  # --- GraphQL service: read views only --------------------------------------
+  - member: gcp-graphql
+    role: roles/bigquery.dataViewer
+    resource: table:finns_hospitality.vw_fact_transactions
+    reason: dedupe view is the only read path for revenue
+  - member: gcp-graphql
+    role: roles/bigquery.dataViewer
+    resource: table:finns_hospitality.vw_fact_camera_events
+    reason: dedupe view is the only read path for visits
+  - member: gcp-graphql
+    role: roles/bigquery.dataViewer
+    resource: table:finns_hospitality.dim_location
+  - member: gcp-graphql
+    role: roles/bigquery.dataViewer
+    resource: table:finns_hospitality.dim_date
+  - member: gcp-graphql
+    role: roles/bigquery.jobUser
+    resource: project:PROJECT
+    reason: queries are jobs
+
+  # --- Ingest job: append facts and the checkpoint ---------------------------
+  - member: gcp-ingest
+    role: roles/bigquery.dataEditor
+    resource: table:finns_hospitality.fact_transactions
+  - member: gcp-ingest
+    role: roles/bigquery.dataEditor
+    resource: table:finns_hospitality.ingest_checkpoint
+  - member: gcp-ingest
+    role: roles/bigquery.jobUser
+    resource: project:PROJECT
+  - member: gcp-ingest
+    role: roles/secretmanager.secretAccessor
+    resource: secret:finns-netsuite-private-key
+    reason: the PS256 client assertion needs the key at run time
+
+# --- Cloud Run invoker ------------------------------------------------------
+# The GraphQL service has no other authentication layer: Cloud Run IAM is it.
+# /healthz is behind the same gate, so an unauthenticated liveness probe returns
+# 403. That is deliberate and documented in README.md.
+invoker:
+  - service: finns-graphql
+    member: group:analytics@example.com
+    role: roles/run.invoker
+  - service: finns-graphql
+    member: serviceAccount:gcp-ingest
+    role: roles/run.invoker
+    note: only if the ingest job is ever pointed at the API; it is not today
+```
+
+## Applying it
+
+```bash
+PROJECT=your-project-id
+
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member="serviceAccount:edge-webhook@$PROJECT.iam.gserviceaccount.com" \
+  --role="roles/bigquery.jobUser"
+
+bq add-iam-policy-binding \
+  --member="serviceAccount:edge-webhook@$PROJECT.iam.gserviceaccount.com" \
+  --role="roles/bigquery.dataEditor" \
+  "$PROJECT:finns_hospitality.fact_camera_events"
+
+bq add-iam-policy-binding \
+  --member="serviceAccount:gcp-graphql@$PROJECT.iam.gserviceaccount.com" \
+  --role="roles/bigquery.dataViewer" \
+  "$PROJECT:finns_hospitality.vw_fact_transactions"
+
+gcloud run services add-iam-policy-binding finns-graphql \
+  --region=asia-southeast2 \
+  --member="group:analytics@example.com" \
+  --role="roles/run.invoker"
+```
+
+**Verification status: NOT EXECUTED.** No GCP project, no `gcloud`, no `bq` on the
+development machine. The `gcloud`/`bq` invocations above are transcribed from the
+documented CLI, not observed.

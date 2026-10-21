@@ -1,0 +1,23 @@
+node_modules/
+dist/
+.npm-cache/
+*.tsbuildinfo
+
+# Runtime state - never commit
+data/*
+!data/.gitkeep
+*.db
+*.db-wal
+*.db-shm
+*.jsonl
+*.log
+
+# Secrets - never commit
+.env
+.env.*
+!.env.example
+
+.DS_Store
+
+# Personal study notes - not part of the deliverable, never push
+/docs/

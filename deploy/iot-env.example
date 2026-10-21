@@ -1,0 +1,32 @@
+# Environment for iot-buffer.service
+# Installed at /etc/edge-webhook/iot-env (mode 0640, owned by root:edge).
+# NOT in git. Replace the API key before starting the service.
+
+IOT_PORT=3002
+
+# Static key the cameras send as X-API-Key.
+IOT_API_KEY=replace-with-a-long-random-value
+
+IOT_DB_PATH=/var/lib/iot-buffer/iot-buffer.db
+
+# Batching
+BATCH_INTERVAL_MS=60000
+BATCH_MAX_SIZE=500
+BATCH_MAX_ATTEMPTS=5
+BATCH_RETRY_BASE_MS=1000
+BATCH_RETRY_MAX_MS=60000
+SHUTDOWN_FLUSH_MS=5000
+IOT_BODY_LIMIT=64kb
+
+# Assumed reading duration when a payload omits intervalSeconds.
+IOT_DEFAULT_INTERVAL_SECONDS=60
+
+# Adapter.
+#   jsonl    -> append NDJSON to BQ_SINK_PATH, needs no GCP credential (default)
+#   bigquery -> one WRITE_APPEND load job per batch, token from the metadata server
+BQ_ADAPTER=jsonl
+BQ_SINK_PATH=/var/lib/iot-buffer/bigquery-sink.jsonl
+BQ_PROJECT=
+BQ_DATASET=finns_hospitality
+BQ_TABLE=fact_camera_events
+BQ_TEMP_DIR=/var/lib/iot-buffer

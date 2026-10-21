@@ -1,0 +1,34 @@
+{
+  "name": "distributed-hospitality-ecosystem",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "FINNS assessment - distributed hospitality ecosystem (edge middleware, GraphQL API, BigQuery warehouse)",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "tsc -p tsconfig.json",
+    "gcp-build": "npm run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/gcp-middleware/src/main.js",
+    "start:opera": "node --env-file-if-exists=.env dist/edge-middleware/module-1-opera/src/main.js",
+    "start:iot": "node --env-file-if-exists=.env dist/edge-middleware/module-2-iot/src/main.js",
+    "start:graphql": "node --env-file-if-exists=.env dist/gcp-middleware/src/main.js",
+    "job:ingest": "node --env-file-if-exists=.env dist/gcp-middleware/src/jobs/transactions.js",
+    "mock:netsuite": "node --env-file-if-exists=.env dist/edge-middleware/module-1-opera/mock-netsuite/mock-netsuite.js",
+    "test": "npm run build && node --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "@google-cloud/bigquery": "^9.4.0",
+    "dataloader": "^2.2.3",
+    "express": "^5.1.0",
+    "graphql": "^16.14.2"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.0"
+  }
+}

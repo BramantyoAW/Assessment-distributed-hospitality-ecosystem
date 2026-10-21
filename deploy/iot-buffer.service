@@ -1,0 +1,40 @@
+[Unit]
+Description=FINNS Edge Middleware - IoT people-count buffer (Module 2)
+Documentation=file:///opt/edge-webhook/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=edge
+Group=edge
+WorkingDirectory=/opt/edge-webhook
+EnvironmentFile=/etc/edge-webhook/iot-env
+
+ExecStart=/usr/bin/node dist/edge-middleware/module-2-iot/src/main.js
+
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+# Must exceed SHUTDOWN_FLUSH_MS (default 5000) plus the final drain, or a restart
+# would cut the shutdown flush and leave rows buffered.
+TimeoutStopSec=20
+
+StateDirectory=iot-buffer
+LogsDirectory=iot-buffer
+StandardOutput=append:/var/log/iot-buffer/iot-buffer.log
+StandardError=append:/var/log/iot-buffer/iot-buffer.log
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

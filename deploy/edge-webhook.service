@@ -1,0 +1,44 @@
+[Unit]
+Description=FINNS Edge Middleware - Opera PMS webhook queue (Module 1)
+Documentation=file:///opt/edge-webhook/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=edge
+Group=edge
+WorkingDirectory=/opt/edge-webhook
+EnvironmentFile=/etc/edge-webhook/env
+
+ExecStart=/usr/bin/node dist/edge-middleware/module-1-opera/src/main.js
+
+# Always come back, including after SIGKILL. The queue is on disk, so a restart
+# never loses an accepted event: startup reclaims rows left in 'processing'.
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# systemd owns the log file, so this keeps working under ProtectSystem=strict.
+# LogsDirectory also makes /var/log/edge-webhook writable without ReadWritePaths.
+LogsDirectory=edge-webhook
+StandardOutput=append:/var/log/edge-webhook/edge-webhook.log
+StandardError=append:/var/log/edge-webhook/edge-webhook.log
+
+# SQLite lives here; StateDirectory creates it with the right ownership.
+StateDirectory=edge-webhook
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

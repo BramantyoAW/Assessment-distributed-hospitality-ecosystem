@@ -1,0 +1,271 @@
+# Deploy: Module 1 on an Ubuntu VM (systemd, no Docker)
+
+Target: Ubuntu 24.04 Multipass VM running `edge-webhook.service`.
+
+## 0. Node 24, not the distro package
+
+Ubuntu 24.04 ships Node 18. This code needs `node:sqlite` (22.5+),
+`--env-file-if-exists` (22+) and global `fetch`. Install 24 from NodeSource:
+
+```bash
+curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
+sudo apt-get install -y nodejs
+node --version    # must be v24.x
+```
+
+## 1. Build on the workstation, install on the VM
+
+```bash
+npm ci
+npm run build        # -> dist/
+npm test
+```
+
+```bash
+# On the VM
+sudo useradd --system --home /opt/edge-webhook --shell /usr/sbin/nologin edge
+sudo mkdir -p /opt/edge-webhook
+sudo cp -r dist package.json package-lock.json /opt/edge-webhook/
+cd /opt/edge-webhook
+sudo npm ci --omit=dev          # express only; devDependencies are not needed at runtime
+```
+
+## 2. Secrets, state, unit
+
+```bash
+sudo install -d -m 0755 /etc/edge-webhook
+sudo install -m 0640 -o root -g edge deploy/env.example /etc/edge-webhook/env
+sudoedit /etc/edge-webhook/env          # set both secrets
+
+sudo install -m 0644 deploy/edge-webhook.service /etc/systemd/system/edge-webhook.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now edge-webhook.service
+systemctl status edge-webhook.service --no-pager
+```
+
+`StateDirectory=edge-webhook` and `LogsDirectory=edge-webhook` create
+`/var/lib/edge-webhook` and `/var/log/edge-webhook` with the right ownership,
+which is why the database lives there and not under `/opt`.
+
+## 3. Verify
+
+```bash
+curl -s localhost:3001/healthz
+# {"status":"ok","service":"edge-middleware-module-1-opera"}
+
+curl -s -w ' [%{http_code}]\n' -X POST localhost:3001/webhook/opera \
+  -H "authorization: Bearer $OPERA_BEARER_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"eventId":"evt-demo-1","amount":100}'
+# {"status":"accepted","eventId":"evt-demo-1"} [202]
+
+# same event again
+# {"status":"duplicate","eventId":"evt-demo-1"} [202]
+```
+
+## 4. Prove the restart policy
+
+```bash
+systemctl show -p NRestarts --value edge-webhook.service    # note the number
+sudo systemctl kill -s SIGKILL edge-webhook.service
+sleep 7
+systemctl show -p NRestarts --value edge-webhook.service    # increased by 1
+systemctl is-active edge-webhook.service                    # active
+```
+
+`kill -9` skips the graceful path on purpose. A row left in `processing` is
+reclaimed to `pending` on the next start, and the log records it:
+
+```bash
+grep -a reclaimed_stale_events /var/log/edge-webhook/edge-webhook.log
+```
+
+## 5. Reading the logs
+
+One JSON object per line, so `grep` is enough.
+
+```bash
+tail -f /var/log/edge-webhook/edge-webhook.log
+```
+
+Failed jobs and their reasons:
+
+```bash
+grep -a '"level":"error"' /var/log/edge-webhook/edge-webhook.log | less
+grep -a 'netsuite_retry_scheduled' /var/log/edge-webhook/edge-webhook.log | less
+```
+
+Timeouts (the case the brief asks about, e.g. NetSuite not answering):
+
+```bash
+grep -ai 'timeout' /var/log/edge-webhook/edge-webhook.log | less
+grep -a --line-buffered 'TIMEOUT' /var/log/edge-webhook/edge-webhook.log | less
+```
+
+`-a` matters: a log file that ever received a binary byte makes plain `grep`
+print `Binary file ... matches` instead of the lines. `--line-buffered` keeps
+`less` and pipes updating as new events arrive.
+
+Count events by outcome:
+
+```bash
+grep -ao '"status":"[a-z]*"' /var/log/edge-webhook/edge-webhook.log | sort | uniq -c
+```
+
+## 6. Log rotation is not configured
+
+`StandardOutput=append:` has no rotation and no size cap. systemd does not
+rotate this file; it will grow until the disk complains. Add logrotate:
+
+```bash
+sudo tee /etc/logrotate.d/edge-webhook >/dev/null <<'EOF'
+/var/log/edge-webhook/edge-webhook.log {
+    weekly
+    rotate 8
+    compress
+    missingok
+    notifempty
+    copytruncate
+}
+EOF
+```
+
+`copytruncate` is required because systemd holds the file descriptor open;
+rotating with `rename` would leave systemd writing to the moved inode.
+
+## 7. Module 2 (`iot-buffer.service`)
+
+Same image, same user, separate unit and separate env file:
+
+```bash
+sudo install -m 0640 -o root -g edge deploy/iot-env.example /etc/edge-webhook/iot-env
+sudoedit /etc/edge-webhook/iot-env          # set IOT_API_KEY
+
+sudo install -m 0644 deploy/iot-buffer.service /etc/systemd/system/iot-buffer.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now iot-buffer.service
+```
+
+```bash
+curl -s localhost:3002/healthz
+curl -s -w ' [%{http_code}]\n' -X POST localhost:3002/ingest/people-count \
+  -H "x-api-key: $IOT_API_KEY" -H 'content-type: application/json' \
+  -d '{"eventId":"iot-demo-1","locationId":"lobby","peopleCount":12,"observedAt":"2026-05-01T10:00:00Z"}'
+```
+
+Verify buffering and the shutdown flush, which is the point of the unit's
+`TimeoutStopSec=20`:
+
+```bash
+# rows sit in the buffer until the interval elapses
+sqlite3 /var/lib/iot-buffer/iot-buffer.db 'SELECT status, COUNT(*) FROM iot_events GROUP BY status;'
+
+sudo systemctl restart iot-buffer.service
+# after restart, buffered rows are delivered before exit:
+grep -a iot_batch_sent /var/log/iot-buffer/iot-buffer.log
+wc -l /var/lib/iot-buffer/bigquery-sink.jsonl
+```
+
+Failed batches are the dead-letter queue, and they stay visible:
+
+```bash
+sqlite3 /var/lib/iot-buffer/iot-buffer.db \
+  "SELECT event_id, attempts, last_error FROM iot_events WHERE status='failed';"
+grep -a iot_batch_failed /var/log/iot-buffer/iot-buffer.log
+```
+
+## 8. Contract changes in the final revision
+
+Two things differ from the Day 1 notes in this file. Both are deliberate.
+
+**The people-count path.** The contract path is now
+`POST /api/v1/iot/people-count`. The old `/ingest/people-count` still works: it is
+the same router mounted twice, not a second handler, so the two cannot drift.
+
+```bash
+curl -sS -X POST "http://127.0.0.1:3002/api/v1/iot/people-count" \
+  -H "content-type: application/json" \
+  -H "x-api-key: $IOT_API_KEY" \
+  -d '{"eventId":"iot-demo-2","locationId":"loc-pool","peopleCount":8,"intervalSeconds":30,"observedAt":"2026-05-01T10:05:00Z"}'
+```
+
+**`intervalSeconds` is optional, and its absence is logged.** "12 people" is not a
+measurement without a duration: `SUM(people_count)` over readings of different lengths
+is not comparable, and `cameraSeconds` becomes unauditable. But the payload in the
+brief does not carry the field, so it cannot be required — a camera that only sends
+`{eventId, locationId, cameraId?, peopleCount, observedAt}` must still get a `202`.
+
+When the field is absent, the value of `IOT_DEFAULT_INTERVAL_SECONDS` (default `60`) is
+recorded and the request logs `iot_interval_defaulted`:
+
+```bash
+grep -a iot_interval_defaulted /var/log/iot-buffer/iot-buffer.log | head
+```
+
+That keeps the assumption visible instead of indistinguishable from a measurement. A
+camera that does send the field should send it; an out-of-range value (`0`, `3601`,
+`4.5`) is rejected with `400`, because those are device bugs, not defaults.
+
+Rows written by a build older than this contract have no interval at all and cannot be
+shipped. They are **not** given a default — that default would be indistinguishable
+from a measurement — so they are quarantined at boot:
+
+Rows written before this contract existed have no interval and cannot be shipped.
+They are **not** given a default — an invented 30 seconds would flow straight into
+`SUM(interval_seconds)` as if it had been measured. Instead they are quarantined at
+boot:
+
+```bash
+grep -a quarantined_pre_contract_rows /var/log/iot-buffer/iot-buffer.log
+sqlite3 /var/lib/iot-buffer/iot-buffer.db \
+  "SELECT event_id, last_error FROM iot_events WHERE status='failed';"
+```
+
+## 9. Searching the journal for timeouts
+
+The unit name in this repository is `edge-webhook.service`, and that is the name to
+search. Confirm it before trusting the command — the file name and the unit name only
+match because `deploy/edge-webhook.service` is installed as
+`/etc/systemd/system/edge-webhook.service`:
+
+```bash
+ls -l /etc/systemd/system/edge-webhook.service
+systemctl list-units --type=service --all 'edge-*' --no-pager
+```
+
+Then the search itself:
+
+```bash
+sudo journalctl -u edge-webhook.service --since "24 hours ago" --no-pager | grep -iE 'timeout|timed out'
+```
+
+The same pattern for the buffer, whose unit is `iot-buffer.service`:
+
+```bash
+sudo journalctl -u iot-buffer.service --since "24 hours ago" --no-pager | grep -iE 'timeout|timed out'
+```
+
+`journalctl` reads the journal, while both units also log to a file
+(`/var/log/edge-webhook/*.log`). If the journal is rotated away or the unit was
+started outside systemd during debugging, use the file instead:
+
+```bash
+sudo grep -aiE 'timeout|timed out' /var/log/edge-webhook/edge-webhook.log | tail -50
+```
+
+**Verification status: NOT EXECUTED.** There is no systemd on the development machine
+(`systemctl` and `journalctl` are absent), so neither the unit's start behaviour nor
+`Restart=always` has been observed here. The unit file exists and is reviewed; that is
+not the same as booted.
+
+## 10. Uninstall
+
+```bash
+sudo systemctl disable --now edge-webhook.service iot-buffer.service
+sudo rm /etc/systemd/system/edge-webhook.service /etc/systemd/system/iot-buffer.service
+sudo systemctl daemon-reload
+sudo rm -rf /opt/edge-webhook /etc/edge-webhook \
+            /var/lib/edge-webhook /var/log/edge-webhook \
+            /var/lib/iot-buffer /var/log/iot-buffer
+sudo userdel edge
+```
