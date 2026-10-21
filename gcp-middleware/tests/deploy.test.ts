@@ -153,6 +153,36 @@ test('the cloud ignore file keeps secrets and build output out of the upload', (
   }
 });
 
+test('the units do not block executable memory, which V8 needs', () => {
+  for (const unit of ['deploy/edge-webhook.service', 'deploy/iot-buffer.service']) {
+    const content = read(unit);
+    assert.doesNotMatch(
+      content,
+      /^MemoryDenyWriteExecute=(yes|true)$/m,
+      `${unit} would crash node with SIGTRAP (V8 cannot allocate executable memory)`,
+    );
+    assert.match(content, /LockPersonality=true/, 'the rest of the hardening stays');
+  }
+
+  assert.match(read('deploy/README.md'), /5\/TRAP/, 'the failure mode must be documented');
+});
+
+test('the install steps create the state and log directories by hand', () => {
+  const deploy = read('deploy/README.md');
+
+  // StateDirectory=/LogsDirectory= are not materialised on systemd 259, and the
+  // unit then dies with status=209/STDOUT. The install steps must not rely on them.
+  assert.ok(
+    deploy.includes('install -d -m 0750 -o edge -g edge /var/lib/edge-webhook /var/log/edge-webhook'),
+    'Module 1 install must create /var/lib/edge-webhook and /var/log/edge-webhook',
+  );
+  assert.ok(
+    deploy.includes('install -d -m 0750 -o edge -g edge /var/lib/iot-buffer /var/log/iot-buffer'),
+    'Module 2 install must create /var/lib/iot-buffer and /var/log/iot-buffer',
+  );
+  assert.match(deploy, /209\/STDOUT/, 'the troubleshooting table must explain 209/STDOUT');
+});
+
 test('the documented device payload matches the enforced contract', () => {
   const deploy = read('deploy/README.md');
   // The example must carry intervalSeconds, or a reviewer pasting it gets a 400.

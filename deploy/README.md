@@ -38,6 +38,14 @@ sudo install -m 0640 -o root -g edge deploy/env.example /etc/edge-webhook/env
 sudoedit /etc/edge-webhook/env          # set both secrets
 
 sudo install -m 0644 deploy/edge-webhook.service /etc/systemd/system/edge-webhook.service
+
+# Create the state and log directories by hand. The unit declares
+# StateDirectory=/LogsDirectory=, which is the correct intent, but not every
+# systemd creates them: on systemd 259 (Ubuntu 26.04) they are not
+# materialised and the unit crash-loops with `status=209/STDOUT`, because
+# StandardOutput=append: cannot open a file in a directory that does not exist.
+sudo install -d -m 0750 -o edge -g edge /var/lib/edge-webhook /var/log/edge-webhook
+
 sudo systemctl daemon-reload
 sudo systemctl enable --now edge-webhook.service
 systemctl status edge-webhook.service --no-pager
@@ -142,15 +150,16 @@ sudo install -m 0640 -o root -g edge deploy/iot-env.example /etc/edge-webhook/io
 sudoedit /etc/edge-webhook/iot-env          # set IOT_API_KEY
 
 sudo install -m 0644 deploy/iot-buffer.service /etc/systemd/system/iot-buffer.service
+sudo install -d -m 0750 -o edge -g edge /var/lib/iot-buffer /var/log/iot-buffer
 sudo systemctl daemon-reload
 sudo systemctl enable --now iot-buffer.service
 ```
 
 ```bash
 curl -s localhost:3002/healthz
-curl -s -w ' [%{http_code}]\n' -X POST localhost:3002/ingest/people-count \
+curl -s -w ' [%{http_code}]\n' -X POST localhost:3002/api/v1/iot/people-count \
   -H "x-api-key: $IOT_API_KEY" -H 'content-type: application/json' \
-  -d '{"eventId":"iot-demo-1","locationId":"lobby","peopleCount":12,"observedAt":"2026-05-01T10:00:00Z"}'
+  -d '{"eventId":"iot-demo-1","locationId":"loc-lobby","peopleCount":12,"observedAt":"2026-05-01T10:00:00Z"}'
 ```
 
 Verify buffering and the shutdown flush, which is the point of the unit's
@@ -258,7 +267,26 @@ sudo grep -aiE 'timeout|timed out' /var/log/edge-webhook/edge-webhook.log | tail
 `Restart=always` has been observed here. The unit file exists and is reviewed; that is
 not the same as booted.
 
-## 10. Uninstall
+## 10. When the unit will not start
+
+| `systemctl status` says | Cause | Fix |
+| --- | --- | --- |
+| `status=209/STDOUT` | the log directory does not exist, so `StandardOutput=append:` cannot open the file | create the directories: `sudo install -d -m 0750 -o edge -g edge /var/log/edge-webhook /var/lib/edge-webhook` |
+| `status=203/EXEC` | `ExecStart` points at a node that is not `/usr/bin/node` (nvm installs elsewhere) | install Node from nodesource, or edit `ExecStart` |
+| `status=217/USER` | the `edge` user does not exist | re-run the `useradd` line |
+| `status=1/FAILURE` + `Invalid configuration` | a required variable is missing from `/etc/edge-webhook/env` | read the logged list, it names every missing variable |
+| `code=dumped, status=5/TRAP`, log shows `Check failed: 12 == errno` | `MemoryDenyWriteExecute=true` is set: V8 cannot allocate executable memory | remove that line from the unit (the shipped units do not set it) |
+| `status=226/NAMESPACE` | `ProtectSystem=strict` cannot be applied (unusual kernel/container) | run on a real VM, not inside a container |
+| `unable to open database file` | `OPERA_DB_PATH` still points under `/opt`, which `ProtectSystem=strict` makes read-only | point it at `/var/lib/edge-webhook/` |
+
+Look at the actual reason before guessing:
+
+```bash
+systemctl status edge-webhook.service --no-pager -l
+sudo journalctl -u edge-webhook.service -n 40 --no-pager
+```
+
+## 11. Uninstall
 
 ```bash
 sudo systemctl disable --now edge-webhook.service iot-buffer.service

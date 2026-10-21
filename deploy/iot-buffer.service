@@ -34,7 +34,12 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
-MemoryDenyWriteExecute=true
+# MemoryDenyWriteExecute is deliberately NOT set. V8 allocates executable memory
+# for its JIT; denying write+execute makes Node abort before main() runs
+# (`Check failed: 12 == errno`, SIGTRAP, status=5/TRAP). Verified on aarch64
+# with systemd 259: the same node exits 0 with the directive off and aborts with
+# it on. The alternative, `node --jitless`, trades the whole performance profile
+# of the service for one hardening flag.
 
 [Install]
 WantedBy=multi-user.target
