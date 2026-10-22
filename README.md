@@ -13,7 +13,7 @@ NetSuite ─SuiteQL─> Cloud Run Job ─────────────┴
 
 ```bash
 npm install              # needs Node 24 (node:sqlite, --env-file)
-npm test                 # 176 tests, 0 failures
+npm test                 # 180 tests, 0 failures
 cp .env.example .env
 npm run start:graphql    # :3003 GraphQL, in-memory gateway
 npm run start:opera      # :3001 POST /webhook/opera
@@ -85,7 +85,7 @@ a day early.
 
 ## Verification: what was actually run
 
-`npm run build` and `npm test` (179 tests, 0 failures); Module 1 and 2 HTTP surfaces,
+`npm run build` and `npm test` (180 tests, 0 failures); Module 1 and 2 HTTP surfaces,
 batching, retry, dead-letter and shutdown flush; GraphQL end to end on the in-memory
 gateway; the PS256 assertion against a local key pair; the BigQuery load-job request shape
 against an injected `fetch`.
@@ -102,19 +102,19 @@ including the BigQuery `--dry_run` that must be re-run once a project exists.
 
 ## Operating the edge services
 
-systemd records unit lifecycle in the journal, while the services themselves write JSON
-lines to `/var/log/<unit>/<unit>.log`. The unit installed by `deploy/README.md` is
-`edge-webhook.service` (file `deploy/edge-webhook.service`); confirm the name, then:
+Task 1.3 asks for one command that searches a 50 GB log page by page without loading it into
+RAM; `less` streams, so memory stays flat regardless of file size:
 
 ```bash
+grep -a --line-buffered 'TIMEOUT' /var/log/edge-webhook/edge-webhook.log | less
 sudo journalctl -u edge-webhook.service --since "24 hours ago" --no-pager | grep -iE 'timeout|timed out'
 ```
 
-Same for `iot-buffer.service`; `--since` keeps the search bounded, and application-level
-timeouts land in the file log rather than the journal.
+The path is a file, not a directory: `StandardOutput=append:` writes the application's JSON
+there, while systemd keeps lifecycle records in the journal — so grep the file for timeouts,
+the journal for restarts. Details: `deploy/README.md` §5 and §9.
 
 ## Documentation
 
-VM install and journal search: `deploy/README.md`. Deploy and unverified list:
-`deploy/cloudrun.md`. Auth planes: `deploy/wif.md`. Schema: `database/README.md`.
-GraphQL contract: `gcp-middleware/README.md`.
+VM install and journal search: `deploy/README.md`. Unverified list: `deploy/cloudrun.md`.
+Auth planes: `deploy/wif.md`. Schema: `database/README.md`. GraphQL: `gcp-middleware/README.md`.

@@ -21,3 +21,6 @@ data/*
 
 # Personal study notes - not part of the deliverable, never push
 /docs/
+
+# Local export of README.md for email attachment - never pushed
+/README.pdf
